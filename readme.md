@@ -57,6 +57,9 @@ It provides a sandboxed workspace where AI can manage files, generate profession
 - **Secure Workspace**: All operations confined to your chosen workspace folder.
 - **Strong Isolation by Platform**: WSL2 (Windows), Lima (macOS), and rootless container sandbox (Linux) for isolated command execution.
 - **UI Enhancements**: Beautiful and flexible UI design, system language switching, comprehensive MCP/Skills/Tools call display.
+- **Companion Memory & Profile**: Persistent user profile and long-term memory so the agent can remember your name, preferences, tone, and stable facts across sessions—always stored locally on your machine.
+- **Check-in Loop (Scheduled Companion)**: Optional scheduled “check-in” that summarizes recent work, tracks loose ends, and updates workspace companion files under `.open-cowork/companion/` without you having to ask.
+- **Multi-channel Remote Control**: Remote gateway with Feishu (Lark), Telegram, Slack and more, using rich remote identities (name, language, preferences) so you can talk to the same companion from multiple channels.
 
 <a id="demo"></a>
 
@@ -149,6 +152,14 @@ npm run smoke:linux:sandbox
 npm run smoke:linux:gui
 ```
 
+#### Linux notes (Ubuntu / KDE neon)
+
+- On Linux, Open Cowork prefers **rootless containers** (Podman first, Docker as fallback) for sandbox isolation and transparently falls back to native mode with Path Guard if no container runtime is available.
+- On KDE neon / Ubuntu, the extra tools `xdotool`, `x11-utils`, `imagemagick`, `grim`, `slurp`, `wl-clipboard` are required for **GUI Operation** (screenshots, clicks, keyboard input) on X11/Wayland.
+- You can use the provided commands:
+  - `npm run preflight:linux` to check container + GUI prerequisites.
+  - `npm run smoke:linux:sandbox` and `npm run smoke:linux:gui` for basic sandbox/GUI smoke tests.
+
 ---
 
 <a id="quick-start"></a>
@@ -185,6 +196,88 @@ sudo xattr -rd com.apple.quarantine "/Applications/Open Cowork.app"
 ```
 2.  **Network Access**: For tools like `WebSearch`, you may need to enable "Virtual Network Interface" (TUN Mode) in your proxy settings to ensure connectivity.
 3. **Notion Connector**: Besides setting the integration token, you also need to add connections in a root page. See https://www.notion.com/help/add-and-manage-connections-with-the-api for more details.
+---
+
+## 🧠 Companion Memory & Check-in Loop
+
+Open Cowork includes an optional **Companion Memory** system that lets the agent remember who you are and what matters to you across sessions—without sending anything to extra backend services beyond your chosen model provider.
+
+### User Profile (Settings → Profile)
+
+- Open **Settings → Profile** to tell the companion:
+  - **User name** (short handle like `futur3`)
+  - **Display name** (how you want to be addressed in UI)
+  - **Persona** (tone/style the assistant should adopt)
+  - **Preferred language** and **timezone**
+  - **Style preferences** (e.g. “concise”, “practical”, “include examples”)
+- This information is stored **locally** using encrypted app storage and is used to keep tone and context consistent across sessions.
+
+### Enabling Companion Memory
+
+- Go to **Settings → Companion Memory**.
+- Turn on **“Enable Companion Memory”**:
+  - the agent will automatically extract and save **stable, useful facts** about you and your work (preferences, ongoing goals, constraints),
+  - before each run it retrieves **relevant memory** and adds it to the internal prompt so replies stay coherent over time.
+- You can switch this off at any time if you prefer stateless sessions.
+
+### Check-in Loop (scheduled companion)
+
+- The **Check-in Loop** is an optional scheduled “heartbeat” that:
+  - reads your most recent activity in the app,
+  - writes summaries and loose ends to `.open-cowork/companion/companion-memory.md`,
+  - appends structured entries to `.open-cowork/companion/checkins.jsonl`.
+- To enable it:
+  - open **Settings → Companion Memory** and toggle **“Enable Check-in Loop”**,
+  - adjust:
+    - **Check-in schedule (cron)** – e.g. `0 */6 * * *` for every 6 hours,
+    - **Timeout (ms)** – maximum time allowed for a single check-in job.
+- Recent runs are visible in the **“Recent check-ins”** list in the same tab, with timestamp, summary, and next action.
+
+### Manual control
+
+- At any time you can click **“Run check-in now”** to trigger a manual check-in for the current workspace—useful at the end of a day to snapshot status.
+- To stop automated updates:
+  - disable **“Enable Check-in Loop”** or turn off **Companion Memory** entirely from the same settings tab.
+
+---
+
+## 🌐 Remote Control & Multi-channel Identities
+
+Open Cowork can expose your local agent through a **remote gateway**, so you can talk to the same companion from chat platforms like **Feishu (Lark)**, **Telegram**, and **Slack**, or from custom WebSocket clients.
+
+### Enabling Remote Control
+
+- Open **Settings → Remote Control**:
+  - toggle the **remote gateway** on or off,
+  - choose a **port** and **bind address**:
+    - `127.0.0.1` for local-only usage (safest),
+    - `0.0.0.0` if you plan to expose it via a tunnel (ngrok, Cloudflare, etc.).
+  - pick an **auth mode** (token / allowlist / pairing).
+
+### Channels (Feishu, Telegram, Slack)
+
+- In the same tab you can configure individual channels:
+  - **Feishu (Lark)** – app ID/secret, webhook or WebSocket mode.
+  - **Telegram** – bot token from `@BotFather`, optional webhook URL.
+  - **Slack** – bot token, signing secret, optional app-level token.
+- Additional channels are guarded by **feature flags**, so you can keep remote control entirely off or only enable the specific channels you trust.
+
+### Remote identities
+
+- Each remote user (for example, your Telegram account or a Slack user) is mapped to a **Remote Identity**:
+  - tracks `channelType`, `userId`, display name, preferred language, and last activity,
+  - lets the companion respond with the right persona and language on each channel.
+- From **Remote Control** settings you can:
+  - review **paired users** and **pending pairings**,
+  - explicitly **approve** or **revoke** access for any identity.
+
+### Security tips
+
+- For local-only usage, keep the gateway bound to **`127.0.0.1`**.
+- If you expose the gateway to the internet via a tunnel, always:
+  - use a **strong authentication token** or allowlist mode,
+  - rotate tokens if they may have leaked.
+
 ---
 
 <a id="skills"></a>
@@ -272,7 +365,9 @@ open-cowork/
 - [x] **Rich Input**: File upload and image input in chat
 - [x] **Multi-Model**: OpenAI-compatible API support (iterating)
 - [x] **UI/UX**: Enhanced interface with English/Chinese localization
-- [ ] **Memory Optimization**: Improved context management for longer sessions and cross-session memory.
+- [x] **Companion Memory & Check-in Loop**: Persistent user profile, long-term memory, and scheduled workspace check-ins.
+- [x] **Remote Identities & Multi-channel Remote**: Rich remote identities plus Feishu/Telegram/Slack channel support behind feature flags.
+- [ ] **Cloud & Multi-device Sync**: Optional sync of companion memory and profiles across devices.
 - [ ] **New Features**: Stay tuned!
 
 ---

@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/平台-Windows%20%7C%20macOS-blue" alt="Platform" />
+  <img src="https://img.shields.io/badge/平台-Windows%20%7C%20macOS%20%7C%20Linux-blue" alt="Platform" />
   <img src="https://img.shields.io/badge/协议-MIT-green" alt="License" />
   <img src="https://img.shields.io/badge/Node.js-18+-brightgreen" alt="Node.js" />
 </p>
@@ -27,7 +27,7 @@
 
 ## 📖 简介
 
-**Open Cowork** 是 **Claude Cowork** 的开源实现，提供 **Windows** 和 **macOS** 一键安装包，无需任何编程知识。
+**Open Cowork** 是 **Claude Cowork** 的开源实现，提供 **Windows**、**macOS** 和 **Linux** 一键安装包，无需任何编程知识。
 
 它为 AI 提供了一个沙盒化的工作环境，可以管理文件、通过内置的 **Skills** 系统生成专业文件（PPTX、DOCX、XLSX等）和 **通过MCP链接桌面APP**（浏览器、Notion等）进行人机协作等等。
 
@@ -56,8 +56,11 @@
 - **多模态交互输入**：支持直接拖拽文件和图片到输入框，实现无缝的多模态交互。
 - **实时追踪**：在 Trace Panel 中观察 AI 推理和工具调用过程。
 - **安全可控的工作环境**：所有操作限制在你选择的工作区文件夹内。
-- **虚拟机级别安全隔离**：基于 WSL2 (Windows) 和 Lima (macOS) 的虚拟机隔离，所有命令在隔离的虚拟机中执行，保障宿主机安全。
+- **虚拟机/容器级别安全隔离**：基于 WSL2 (Windows)、Lima (macOS) 与 rootless 容器 (Linux) 的隔离运行环境，所有命令在隔离环境中执行，保障宿主机安全。
 - **UI优化**：灵活优美的UI设计、切换系统语言、完善的MCP/Skills/Tools调用展示。
+- **Companion 记忆与个人档案**：支持持久化的用户档案与长期记忆，助手可以记住你的称呼、偏好、语气风格与稳定事实，这些数据全部保存在本地。
+- **Check-in 循环（定时伙伴）**：可选的定时 “check-in” 循环，会自动总结最近进展、梳理待办，并更新工作区下 `.open-cowork/companion/` 目录中的文件。
+- **多通道远程控制**：通过远程网关，将本地能力暴露给飞书、Telegram、Slack 等渠道，基于丰富的远程身份（名称、语言、偏好）实现跨平台对话。
 
 <a id="演示"></a>
 ## 🎬 演示
@@ -110,6 +113,7 @@ Open Cowork 提供**多级沙盒保护**，确保系统安全：
 | **基础** | 全平台 | 路径守卫 | 文件操作限制在工作区文件夹内 |
 | **增强** | Windows | WSL2 | 命令在隔离的 Linux 虚拟机中执行 |
 | **增强** | macOS | Lima | 命令在隔离的 Linux 虚拟机中执行 |
+| **增强** | Linux | Rootless Podman/Docker | 命令在 rootless 容器中执行 |
 
 - **Windows (WSL2)**：检测到 WSL2 后，所有 Bash 命令自动路由到 Linux 虚拟机，工作区双向同步。
 - **macOS (Lima)**：安装 [Lima](https://lima-vm.io/) (`brew install lima`) 后，命令在挂载了 `/Users` 的 Ubuntu 虚拟机中运行。
@@ -125,6 +129,24 @@ Open Cowork 提供**多级沙盒保护**，确保系统安全：
 brew install lima
 # Open Cowork 会自动创建和管理 'claude-sandbox' 虚拟机
 ```
+
+- **Linux (Ubuntu / KDE neon 等)**：
+需要安装 rootless 容器运行时（推荐 **Podman**，可兼容 Docker）以及 GUI 操作相关工具：
+
+```bash
+sudo apt update
+sudo apt install -y podman xdotool x11-utils imagemagick grim slurp wl-clipboard
+# 可选检查：
+npm run preflight:linux
+npm run smoke:linux:sandbox
+npm run smoke:linux:gui
+```
+
+#### Linux 提示（Ubuntu / KDE neon）
+
+- Linux 上默认优先使用 **rootless 容器**（Podman 为首选，Docker 为后备），在不可用时退回到本机 + 路径守卫模式。
+- KDE neon / Ubuntu 环境下，上述工具用于 **GUI Operation**（截图、点击、键盘输入等），建议一并安装。
+- 使用 `npm run preflight:linux` 可检查容器与 GUI 依赖是否就绪，`npm run smoke:linux:sandbox` 与 `npm run smoke:linux:gui` 可做基础冒烟测试。
 
 ---
 
@@ -162,6 +184,90 @@ sudo xattr -rd com.apple.quarantine "/Applications/Open Cowork.app"
 ```
 2.  **网络连接**：对于 `WebSearch` 等联网工具，可能需要开启代理软件的“虚拟网卡 (TUN模式)”功能才能正常访问。
 3. **Notion连接器使用**: 除了设置Notion token之外，还需要在根页面添加连接。更多指引请看https://www.notion.com/help/add-and-manage-connections-with-the-api。
+
+---
+
+## 🧠 Companion 记忆与 Check-in 循环
+
+Open Cowork 内置可选的 **Companion Memory** 系统，可以在不增加任何额外云端服务的前提下，帮助助手在本地记住“你是谁”和“你在做什么”。
+
+### 用户档案（设置 → Profile）
+
+- 打开 **Settings → Profile**（设置 → 个人档案）可以告诉助手：
+  - **User name**：短用户名（例如 `futur3`）
+  - **Display name**：在界面中显示的称呼
+  - **Persona**：你希望助手采用的语气 / 角色
+  - **Preferred language** 与 **时区**
+  - **Style preferences**：例如 “简洁”、“实用”、“多举例”等
+- 这些信息会使用本地加密存储，仅用于保持多轮对话中的语气和上下文一致。
+
+### 启用 Companion 记忆
+
+- 打开 **Settings → Companion Memory**（设置 → Companion 记忆）。
+- 勾选 **“Enable Companion Memory”**：
+  - 每轮对话结束后，系统会自动提取**稳定且有用的事实**（偏好、长期目标、约束条件等）并写入长期记忆；
+  - 每次运行前，会检索**相关记忆**并追加到内部提示词中，使回答在不同会话之间保持连贯。
+- 你可以随时关闭该开关，回到完全无记忆的“纯工具”模式。
+
+### Check-in 循环（定时伙伴）
+
+- **Check-in Loop** 是一个可选的定时 “心跳”，会：
+  - 读取最近的用户活动；
+  - 将摘要和“未完事项”写入 `.open-cowork/companion/companion-memory.md`；
+  - 追加结构化记录到 `.open-cowork/companion/checkins.jsonl`。
+- 启用方式：
+  - 在 **Settings → Companion Memory** 页面中打开 **“Enable Check-in Loop”**；
+  - 配置：
+    - **Check-in schedule (cron)**：如 `0 */6 * * *` 表示每 6 小时一次；
+    - **Timeout (ms)**：单次 check-in 任务允许的最长执行时间。
+- 在同一页面可以看到 **最近的 Check-in 列表**，包含时间、摘要和下一步建议。
+
+### 手动控制
+
+- 可以点击 **“Run check-in now”** 手动触发一次 Check-in，适合在一天结束时对当前项目做快照总结。
+- 若想停止自动更新：
+  - 关闭 **“Enable Check-in Loop”** 或直接关闭 **Companion Memory** 即可。
+
+---
+
+## 🌐 远程控制与多通道身份
+
+Open Cowork 可以通过本地 **远程网关** 将你的 Agent 暴露给 **飞书**、**Telegram**、**Slack** 等聊天平台，或者自定义 WebSocket 客户端，让你在手机或其他终端继续与同一个助手协作。
+
+### 启用远程控制
+
+- 打开 **Settings → Remote Control**（设置 → 远程控制）：
+  - 打开或关闭远程网关；
+  - 选择 **端口** 与 **绑定地址**：
+    - `127.0.0.1`：仅本机访问（最安全）；
+    - `0.0.0.0`：需要配合公网隧道（如 ngrok、Cloudflare Tunnel 等）使用。
+  - 配置 **认证模式**（token / allowlist / pairing）。
+
+### 支持的渠道（Feishu / Telegram / Slack）
+
+- 在同一页面可以分别配置各个渠道：
+  - **Feishu (飞书)**：App ID / Secret、Webhook 或 WebSocket 模式；
+  - **Telegram**：从 `@BotFather` 获取 Bot Token，可选 Webhook 地址；
+  - **Slack**：Bot Token、Signing Secret，可选 App-level Token。
+- 新增渠道都通过 **feature flag** 控制，你可以完全关闭远程控制，或只启用自己信任的渠道。
+
+### 远程身份（Remote Identities）
+
+- 每个远程用户（例如你的 Telegram 账号、某个 Slack 用户）都会映射为一个 **Remote Identity**：
+  - 记录 `channelType`、`userId`、显示名称、偏好语言、最后活跃时间等；
+  - 帮助助手在不同渠道自动使用合适的语言与 persona 回复。
+- 在 **Remote Control** 页面可以：
+  - 查看已配对用户与待审批配对请求；
+  - 显式 **批准** 或 **撤销** 某个远程身份的访问权限。
+
+### 安全建议
+
+- 仅在本地使用时，建议将网关绑定到 **`127.0.0.1`**。
+- 若通过公网隧道暴露网关，请务必：
+  - 使用足够强的 **访问 Token** 或 allowlist 模式；
+  - 一旦怀疑 Token 泄露，及时进行更换或关闭网关。
+
+---
 
 <a id="技能库"></a>
 ## 🧰 技能库
@@ -243,12 +349,14 @@ open-cowork/
 - [x] **核心**：稳定的 Windows & macOS 安装包
 - [x] **安全**：完整的文件系统沙盒
 - [x] **技能**：支持 PPTX, DOCX, PDF, XLSX + 自定义技能管理
-- [x] **虚拟机沙盒**：WSL2 (Windows) 和 Lima (macOS) 隔离支持
+- [x] **虚拟机/容器沙盒**：WSL2 (Windows)、Lima (macOS) 与 rootless 容器 (Linux) 隔离支持
 - [x] **MCP Connectors**：支持自定义连接器集成外部服务
 - [x] **丰富输入**：聊天框支持文件上传和图片输入
 - [x] **多模型**：OpenAI 兼容接口支持（持续迭代中）
 - [x] **界面优化**：UI 增强，支持中英文切换
-- [ ] **记忆优化**：改进长会话的上下文管理和跨会话记忆。
+- [x] **Companion 记忆与 Check-in 循环**：支持个性化档案、长期记忆以及定时工作区 Check-in。
+- [x] **远程身份与多通道远程控制**：支持丰富的 Remote Identity 与飞书 / Telegram / Slack 等多渠道（通过 feature flag 控制）。
+- [ ] **云端与多设备同步**：可选的 Companion 记忆与档案跨设备同步能力。
 - [ ] **全新特征**：敬请期待！
 
 ---
