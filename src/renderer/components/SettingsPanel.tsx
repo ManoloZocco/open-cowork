@@ -665,6 +665,17 @@ interface SandboxStatus {
     pipAvailable?: boolean;
     claudeCodeAvailable?: boolean;
   };
+  linuxContainer?: {
+    available: boolean;
+    runtime?: 'podman' | 'docker';
+    rootless?: boolean;
+    version?: string;
+    image?: string;
+    imageAvailable?: boolean;
+    sessionType?: 'x11' | 'wayland' | 'tty' | 'unknown';
+    desktop?: string;
+    missingGuiTools?: string[];
+  };
   error?: string;
 }
 
@@ -682,6 +693,7 @@ function SandboxTab() {
   const platform = window.electronAPI?.platform || 'unknown';
   const isWindows = platform === 'win32';
   const isMac = platform === 'darwin';
+  const isLinux = platform === 'linux';
 
   // Single initialization effect - load config and status together
   useEffect(() => {
@@ -772,6 +784,8 @@ function SandboxTab() {
         await window.electronAPI.sandbox.checkWSL();
       } else if (isMac) {
         await window.electronAPI.sandbox.checkLima();
+      } else if (isLinux) {
+        await window.electronAPI.sandbox.checkLinuxContainer();
       }
       
       // Get full status after check
@@ -930,12 +944,20 @@ function SandboxTab() {
     );
   }
 
-  const sandboxAvailable = isWindows ? status?.wsl?.available : isMac ? status?.lima?.available : false;
+  const sandboxAvailable = isWindows
+    ? status?.wsl?.available
+    : isMac
+      ? status?.lima?.available
+      : isLinux
+        ? status?.linuxContainer?.available
+        : false;
   const sandboxReady = isWindows 
     ? status?.wsl?.available && status?.wsl?.nodeAvailable
     : isMac 
       ? status?.lima?.available && status?.lima?.instanceRunning && status?.lima?.nodeAvailable
-      : false;
+      : isLinux
+        ? status?.linuxContainer?.available && status?.mode === 'linux-container'
+        : false;
 
   return (
     <div className="space-y-4">
@@ -943,7 +965,13 @@ function SandboxTab() {
       <div className="px-4 py-3 rounded-xl bg-blue-500/10 text-blue-600 text-sm">
         <p className="font-medium mb-1">🛡️ {t('sandbox.title')}</p>
         <p className="text-xs opacity-80">
-          {isWindows ? t('sandbox.wslDesc') : isMac ? t('sandbox.limaDesc') : t('sandbox.nativeDesc')}
+          {isWindows
+            ? t('sandbox.wslDesc')
+            : isMac
+              ? t('sandbox.limaDesc')
+              : isLinux
+                ? 'Linux rootless container isolation (Podman/Docker) with GUI diagnostics for KDE/Wayland/X11.'
+                : t('sandbox.nativeDesc')}
         </p>
       </div>
 
@@ -989,8 +1017,8 @@ function SandboxTab() {
         </div>
       </div>
 
-      {/* Status Details - Hidden while sandbox is disabled for debugging */}
-      {false && sandboxEnabled && (
+      {/* Status Details */}
+      {sandboxEnabled && (
         <div className="p-4 rounded-xl bg-surface border border-border space-y-4 animate-in fade-in duration-200">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-medium text-text-primary">{t('sandbox.environmentStatus')}</h3>
@@ -1019,7 +1047,13 @@ function SandboxTab() {
             <div className="p-3 rounded-lg bg-surface-muted">
               <div className="text-xs text-text-muted mb-1">{t('sandbox.mode')}</div>
               <div className="text-sm font-medium text-text-primary">
-                {status?.mode === 'wsl' ? 'WSL2' : status?.mode === 'lima' ? 'Lima VM' : t('sandbox.native')}
+                {status?.mode === 'wsl'
+                  ? 'WSL2'
+                  : status?.mode === 'lima'
+                    ? 'Lima VM'
+                    : status?.mode === 'linux-container'
+                      ? 'Linux Container'
+                      : t('sandbox.native')}
               </div>
             </div>
           </div>
@@ -1141,10 +1175,35 @@ function SandboxTab() {
             </div>
           )}
 
-          {/* Linux - Native Mode */}
+          {/* Linux - Container / Native Mode */}
           {!isWindows && !isMac && (
-            <div className="p-3 rounded-lg bg-surface-muted text-text-secondary text-sm">
-              {t('sandbox.linuxNative')}
+            <div className="space-y-2">
+              <div className="text-xs font-medium text-text-secondary uppercase tracking-wider">
+                Linux Container {t('sandbox.status')}
+              </div>
+              <StatusItem
+                label="Rootless runtime"
+                available={status?.linuxContainer?.available || false}
+                detail={status?.linuxContainer?.runtime ? `${status.linuxContainer.runtime}${status.linuxContainer.version ? ` (${status.linuxContainer.version})` : ''}` : undefined}
+              />
+              <StatusItem
+                label="Sandbox image"
+                available={status?.linuxContainer?.imageAvailable || false}
+                detail={status?.linuxContainer?.image}
+                optional
+              />
+              <StatusItem
+                label="Session"
+                available={Boolean(status?.linuxContainer?.sessionType)}
+                detail={`${status?.linuxContainer?.sessionType || 'unknown'}${status?.linuxContainer?.desktop ? ` / ${status.linuxContainer.desktop}` : ''}`}
+                optional
+              />
+              {status?.linuxContainer?.missingGuiTools && status.linuxContainer.missingGuiTools.length > 0 && (
+                <div className="mt-3 p-3 rounded-lg bg-amber-500/10 text-amber-600 text-xs">
+                  <p className="font-medium mb-1">Missing GUI tools</p>
+                  <p className="opacity-80">{status.linuxContainer.missingGuiTools.join(', ')}</p>
+                </div>
+              )}
             </div>
           )}
         </div>

@@ -1,0 +1,61 @@
+name: Linux Packaging
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  linux-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            podman \
+            xdotool \
+            x11-utils \
+            imagemagick \
+            grim \
+            slurp \
+            wl-clipboard \
+            rpm \
+            libfuse2
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Linux preflight (strict)
+        run: npm run preflight:linux:strict
+
+      - name: Linux sandbox smoke
+        run: npm run smoke:linux:sandbox
+
+      - name: Linux GUI smoke
+        run: npm run smoke:linux:gui
+
+      - name: Build Linux packages
+        run: npm run build:linux
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            release/*.AppImage
+            release/*.deb
+            release/*.rpm
+          if-no-files-found: error
+

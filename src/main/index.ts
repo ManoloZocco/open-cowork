@@ -15,6 +15,7 @@ import { getSandboxAdapter, shutdownSandbox } from './sandbox/sandbox-adapter';
 import { SandboxSync } from './sandbox/sandbox-sync';
 import { WSLBridge } from './sandbox/wsl-bridge';
 import { LimaBridge } from './sandbox/lima-bridge';
+import { LinuxContainerBridge } from './sandbox/linux-container-bridge';
 import { getSandboxBootstrap } from './sandbox/sandbox-bootstrap';
 import type { MCPServerConfig } from './mcp/mcp-manager';
 import type { ClientEvent, ServerEvent, ApiTestInput, ApiTestResult } from '../renderer/types';
@@ -995,6 +996,7 @@ ipcMain.handle('sandbox.getStatus', async () => {
         initialized: adapter.initialized,
         wsl: wslStatus,
         lima: null,
+        linuxContainer: null,
       };
     } else if (platform === 'darwin') {
       const limaStatus = await LimaBridge.checkLimaStatus();
@@ -1004,14 +1006,17 @@ ipcMain.handle('sandbox.getStatus', async () => {
         initialized: adapter.initialized,
         wsl: null,
         lima: limaStatus,
+        linuxContainer: null,
       };
     } else {
+      const linuxContainerStatus = await LinuxContainerBridge.checkLinuxContainerStatus();
       return {
         platform,
-        mode: adapter.initialized ? adapter.mode : 'native',
+        mode: adapter.initialized ? adapter.mode : (linuxContainerStatus.available ? 'linux-container' : 'native'),
         initialized: adapter.initialized,
         wsl: null,
         lima: null,
+        linuxContainer: linuxContainerStatus,
       };
     }
   } catch (error) {
@@ -1020,6 +1025,7 @@ ipcMain.handle('sandbox.getStatus', async () => {
       platform: process.platform,
       mode: 'none',
       initialized: false,
+      linuxContainer: null,
       error: error instanceof Error ? error.message : 'Unknown error',
     };
   }
@@ -1068,6 +1074,16 @@ ipcMain.handle('sandbox.checkLima', async () => {
     return await LimaBridge.checkLimaStatus();
   } catch (error) {
     logError('[Sandbox] Error checking Lima:', error);
+    return { available: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+});
+
+// Linux container sandbox status handler (Linux)
+ipcMain.handle('sandbox.checkLinuxContainer', async () => {
+  try {
+    return await LinuxContainerBridge.checkLinuxContainerStatus();
+  } catch (error) {
+    logError('[Sandbox] Error checking Linux container runtime:', error);
     return { available: false, error: error instanceof Error ? error.message : 'Unknown error' };
   }
 });
@@ -1539,10 +1555,11 @@ async function handleClientEvent(event: ClientEvent): Promise<unknown> {
     case 'session.delete':
       return sessionManager.deleteSession(event.payload.sessionId);
 
-    case 'session.list':
+    case 'session.list': {
       const sessions = sessionManager.listSessions();
       sendToRenderer({ type: 'session.list', payload: { sessions } });
       return sessions;
+    }
 
     case 'session.getMessages':
       return sessionManager.getMessages(event.payload.sessionId);
@@ -1562,7 +1579,7 @@ async function handleClientEvent(event: ClientEvent): Promise<unknown> {
         event.payload.answer
       );
 
-    case 'folder.select':
+    case 'folder.select': {
       const folderResult = await dialog.showOpenDialog(mainWindow!, {
         properties: ['openDirectory'],
       });
@@ -1574,6 +1591,7 @@ async function handleClientEvent(event: ClientEvent): Promise<unknown> {
         return folderResult.filePaths[0];
       }
       return null;
+    }
 
     case 'workdir.get':
       return getWorkingDir();
@@ -1581,7 +1599,7 @@ async function handleClientEvent(event: ClientEvent): Promise<unknown> {
     case 'workdir.set':
       return setWorkingDir(event.payload.path, event.payload.sessionId);
 
-    case 'workdir.select':
+    case 'workdir.select': {
       const workdirResult = await dialog.showOpenDialog(mainWindow!, {
         properties: ['openDirectory'],
         title: 'Select Working Directory',
@@ -1592,6 +1610,7 @@ async function handleClientEvent(event: ClientEvent): Promise<unknown> {
         return setWorkingDir(selectedPath, event.payload.sessionId);
       }
       return { success: false, path: '', error: 'User cancelled' };
+    }
 
     case 'settings.update':
       // TODO: Implement settings update

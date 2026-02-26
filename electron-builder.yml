@@ -95,14 +95,30 @@ mac:
 
 linux:
   icon: resources/icon.png
+  maintainer: Open Cowork Team <opensource@open-cowork.dev>
   target:
     - target: AppImage
       arch:
         - x64
+    - target: deb
+      arch:
+        - x64
+    - target: rpm
+      arch:
+        - x64
+  category: Development
   artifactName: ${productName}-${version}-linux-${arch}.${ext}
   extraResources:
     - from: resources/node/linux-x64
       to: node
+      filter:
+        - "**/*"
+    - from: resources/python/linux-x64
+      to: python
+      filter:
+        - "**/*"
+    - from: resources/tools/linux-x64
+      to: tools
       filter:
         - "**/*"
 

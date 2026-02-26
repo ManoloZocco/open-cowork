@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 
 /**
- * Prepare a bundled Python runtime for Open Cowork (macOS).
+ * Prepare a bundled Python runtime for Open Cowork.
  *
  * Goal:
- * - Bundle a standalone python3 into `resources/python/darwin-{arch}/`
- * - Preinstall required packages into `resources/python/darwin-{arch}/site-packages/`
- *   - Pillow (PIL)
- *   - pyobjc-framework-Quartz (import Quartz)
+ * - macOS: bundle standalone python3 into `resources/python/darwin-{arch}/`
+ * - Linux: create python shim in `resources/python/linux-x64/`
+ * - Preinstall required packages into `resources/python/<platform-arch>/site-packages/`
+ *   - macOS: Pillow + pyobjc-framework-Quartz
+ *   - Linux: Pillow
  *
  * Runtime code (gui-operate-server) will prefer the bundled Python and add
  * `${pythonRoot}/site-packages` to PYTHONPATH.
@@ -368,14 +369,69 @@ async function prepareDarwinArch(arch) {
   installPackages(siteDir, target.platformTag);
 }
 
+function writeLinuxPythonShim(pythonBinPath) {
+  ensureDir(path.dirname(pythonBinPath));
+  const shim = `#!/usr/bin/env bash
+set -euo pipefail
+exec /usr/bin/env python3 "$@"
+`;
+  fs.writeFileSync(pythonBinPath, shim, 'utf8');
+  fs.chmodSync(pythonBinPath, 0o755);
+}
+
+function installLinuxPackages(siteDir) {
+  ensureDir(siteDir);
+
+  const hasPillow = exists(path.join(siteDir, 'PIL'));
+  if (hasPillow) {
+    console.log(`✓ Linux Python packages already present in ${siteDir}`);
+    return;
+  }
+
+  const pipPython = process.env.OPEN_COWORK_PIP_PYTHON || 'python3';
+  const cmd =
+    `${pipPython} -m pip install --upgrade --no-input --target "${siteDir}" pillow`;
+
+  try {
+    console.log(`📦 Installing Linux Python packages into ${siteDir}...`);
+    execSync(cmd, { stdio: 'inherit' });
+  } catch (error) {
+    console.warn(
+      '[prepare:python] Warning: failed to preinstall Linux Python packages (continuing). ' +
+      'Runtime will try system Python packages.'
+    );
+  }
+}
+
+async function prepareLinuxX64() {
+  const destDir = path.join(OUTPUT_ROOT, 'linux-x64');
+  const pythonBin = path.join(destDir, 'bin', 'python3');
+  const siteDir = path.join(destDir, 'site-packages');
+
+  if (!exists(pythonBin)) {
+    console.log('🐍 Preparing Linux Python shim for linux-x64...');
+    writeLinuxPythonShim(pythonBin);
+  } else {
+    console.log(`✓ Linux Python shim already present: ${pythonBin}`);
+  }
+
+  installLinuxPackages(siteDir);
+}
+
 async function main() {
-  if (process.platform !== 'darwin') {
-    console.log('[prepare:python] Non-macOS platform, skipping.');
+  if (process.platform !== 'darwin' && process.platform !== 'linux') {
+    console.log('[prepare:python] Unsupported platform, skipping.');
     return;
   }
 
   ensureDir(OUTPUT_ROOT);
   ensureDir(DOWNLOAD_DIR);
+
+  if (process.platform === 'linux') {
+    await prepareLinuxX64();
+    console.log('✅ Linux Python runtime prepared.');
+    return;
+  }
 
   const args = process.argv.slice(2);
   const wantsAll = args.includes('--all');

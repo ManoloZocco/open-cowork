@@ -240,7 +240,7 @@ Use tool \`mcp__Chrome__click\` with arguments: { "selector": "button.submit" }
         return lines.join('\n');
       };
 
-      let sections: string[] = [];
+      const sections: string[] = [];
       
       if (emailCredentials.length > 0) {
         sections.push(`**Email Accounts (${emailCredentials.length}):**\n${emailCredentials.map(formatCredential).join('\n\n')}`);
@@ -845,7 +845,6 @@ Then follow the workflow described in that file.
             const sandboxSkillsPath = `${sandboxPath}/.claude/skills`;
 
             // Create .claude/skills directory in sandbox
-            const { execSync } = require('child_process');
             execSync(`wsl -d ${distro} -e mkdir -p "${sandboxSkillsPath}"`, {
               encoding: 'utf-8',
               timeout: 10000
@@ -980,7 +979,6 @@ Then follow the workflow described in that file.
             const sandboxSkillsPath = `${sandboxPath}/.claude/skills`;
 
             // Create .claude/skills directory in sandbox
-            const { execSync } = require('child_process');
             execSync(`limactl shell claude-sandbox -- mkdir -p "${sandboxSkillsPath}"`, {
               encoding: 'utf-8',
               timeout: 10000
@@ -1060,6 +1058,21 @@ Then follow the workflow described in that file.
         }
       }
 
+      if (sandbox.isLinuxContainer && workingDir) {
+        useSandboxIsolation = true;
+        sandboxPath = VIRTUAL_WORKSPACE_PATH;
+        log('[ClaudeAgentRunner] Linux container mode active (bind-mounted workspace).');
+        this.sendToRenderer({
+          type: 'sandbox.sync',
+          payload: {
+            sessionId: session.id,
+            phase: 'ready',
+            message: 'Linux container sandbox ready',
+            detail: 'Workspace bind-mounted into rootless container runtime',
+          },
+        });
+      }
+
       // Check if current user message includes images
       // Images need to be passed via AsyncIterable<SDKUserMessage>, not string prompt
       const lastUserMessage = existingMessages.length > 0
@@ -1105,7 +1118,6 @@ Then follow the workflow described in that file.
       const builtinSkillsPathForValidation = this.getBuiltinSkillsPath();
       const appClaudeDirForValidation = this.getAppClaudeDir();
       
-      // @ts-ignore - Reserved for future use
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const isPathInsideWorkspace = (targetPath: string): boolean => {
         if (!targetPath) return true;
@@ -1151,6 +1163,7 @@ Then follow the workflow described in that file.
         
         return true; // Relative path without .. is OK
       };
+      void isPathInsideWorkspace;
 
       // Extract paths from tool input
       const extractPathsFromInput = (toolName: string, input: Record<string, unknown>): string[] => {
@@ -1167,7 +1180,7 @@ Then follow the workflow described in that file.
           const cmd = String(input.command);
           
           // Extract Windows absolute paths (C:\... or D:\...)
-          const winPaths = cmd.match(/[A-Za-z]:[\\\/][^\s;|&"'<>]*/g) || [];
+          const winPaths = cmd.match(/[A-Za-z]:[\\/][^\s;|&"'<>]*/g) || [];
           paths.push(...winPaths);
           
           // Extract quoted paths
@@ -1345,7 +1358,7 @@ Then follow the workflow described in that file.
               : (config.command === 'node' && bundledNodePaths ? bundledNodePaths.node : config.command);
             
             // 使用内置 npx/node 时，将内置 node bin 注入 PATH
-            let serverEnv = { ...config.env };
+            const serverEnv = { ...config.env };
             if (bundledNodePaths && (config.command === 'npx' || config.command === 'node')) {
               const nodeBinDir = path.dirname(bundledNodePaths.node);
               const currentPath = process.env.PATH || '';
@@ -1475,7 +1488,7 @@ Then follow the workflow described in that file.
           let actualCommand = command;
           let actualArgs = args;
           let actualEnv: NodeJS.ProcessEnv = { ...spawnEnv };
-          let spawnOptions2: any = {
+          const spawnOptions2: any = {
             cwd: spawnCwd,
             stdio: ['pipe', 'pipe', 'pipe'],
             env: actualEnv,
@@ -1509,8 +1522,8 @@ Then follow the workflow described in that file.
               // Fallback to Electron as Node.js if bundled node not found
               log('[ClaudeAgentRunner] Bundled Node.js not found, using Electron as fallback');
               if (process.platform === 'darwin') {
-                const electronPath = process.execPath.replace(/'/g, "'\''");
-                const quotedArgs = args.map(a => `'${a.replace(/'/g, "'\''")}'`).join(' ');
+                const electronPath = process.execPath.replace(/'/g, "'\\''");
+                const quotedArgs = args.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
                 const shellCommand = `ELECTRON_RUN_AS_NODE=1 '${electronPath}' ${quotedArgs}`;
                 actualCommand = '/bin/bash';
                 actualArgs = ['-c', shellCommand];
@@ -1563,7 +1576,7 @@ When you produce a final deliverable file, declare it once using this exact bloc
 {"path":"/workspace/path/to/file.ext","name":"optional display name","type":"optional type"}
 \`\`\`
 </artifact_instructions>
-<application_details> Claude is powering **Cowork mode**, a feature of the Claude desktop app. Cowork mode is currently a **research preview**. Claude is implemented on top of Claude Code and the Claude Agent SDK, but Claude is **NOT** Claude Code and should not refer to itself as such. Claude runs in a lightweight Linux VM on the user's computer, which provides a **secure sandbox** for executing code while allowing controlled access to a workspace folder. Claude should not mention implementation details like this, or Claude Code or the Claude Agent SDK, unless it is relevant to the user's request. </application_details>
+<application_details> Claude is powering **Cowork mode**, a feature of the Claude desktop app. Cowork mode is currently a **research preview**. Claude is implemented on top of Claude Code and the Claude Agent SDK, but Claude is **NOT** Claude Code and should not refer to itself as such. Claude runs in an isolated execution environment on the user's computer (WSL2/Lima/rootless container depending on platform), which provides a **secure sandbox** for executing code while allowing controlled access to a workspace folder. Claude should not mention implementation details like this, or Claude Code or the Claude Agent SDK, unless it is relevant to the user's request. </application_details>
 <behavior_instructions>
 ==
 Product Information==
@@ -2318,6 +2331,8 @@ Cowork mode includes **WebFetch** and **WebSearch** tools for retrieving web con
           } else {
             logError('[ClaudeAgentRunner] Sync failed:', syncResult.error);
           }
+        } else if (sandbox.isLinuxContainer) {
+          log('[ClaudeAgentRunner] Linux container sandbox uses bind mount; no sync required.');
         }
 
         // Note: Sandbox is NOT cleaned up here - it persists across messages in the same conversation

@@ -183,6 +183,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
         pipAvailable?: boolean;
         claudeCodeAvailable?: boolean;
       };
+      linuxContainer?: {
+        available: boolean;
+        runtime?: 'podman' | 'docker';
+        rootless?: boolean;
+        version?: string;
+        image?: string;
+        imageAvailable?: boolean;
+        sessionType?: 'x11' | 'wayland' | 'tty' | 'unknown';
+        desktop?: string;
+        missingGuiTools?: string[];
+      };
       error?: string;
     }> => ipcRenderer.invoke('sandbox.getStatus'),
     checkWSL: (): Promise<{
@@ -207,6 +218,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
       pipAvailable?: boolean;
       claudeCodeAvailable?: boolean;
     }> => ipcRenderer.invoke('sandbox.checkLima'),
+    checkLinuxContainer: (): Promise<{
+      available: boolean;
+      runtime?: 'podman' | 'docker';
+      rootless?: boolean;
+      version?: string;
+      image?: string;
+      imageAvailable?: boolean;
+      sessionType?: 'x11' | 'wayland' | 'tty' | 'unknown';
+      desktop?: string;
+      missingGuiTools?: string[];
+      error?: string;
+    }> => ipcRenderer.invoke('sandbox.checkLinuxContainer'),
     installNodeInWSL: (distro: string): Promise<boolean> => 
       ipcRenderer.invoke('sandbox.installNodeInWSL', distro),
     installPythonInWSL: (distro: string): Promise<boolean> => 
@@ -377,6 +400,17 @@ declare global {
             pipAvailable?: boolean;
             claudeCodeAvailable?: boolean;
           };
+          linuxContainer?: {
+            available: boolean;
+            runtime?: 'podman' | 'docker';
+            rootless?: boolean;
+            version?: string;
+            image?: string;
+            imageAvailable?: boolean;
+            sessionType?: 'x11' | 'wayland' | 'tty' | 'unknown';
+            desktop?: string;
+            missingGuiTools?: string[];
+          };
           error?: string;
         }>;
         checkWSL: () => Promise<{
@@ -400,6 +434,18 @@ declare global {
           pythonVersion?: string;
           pipAvailable?: boolean;
           claudeCodeAvailable?: boolean;
+        }>;
+        checkLinuxContainer: () => Promise<{
+          available: boolean;
+          runtime?: 'podman' | 'docker';
+          rootless?: boolean;
+          version?: string;
+          image?: string;
+          imageAvailable?: boolean;
+          sessionType?: 'x11' | 'wayland' | 'tty' | 'unknown';
+          desktop?: string;
+          missingGuiTools?: string[];
+          error?: string;
         }>;
         installNodeInWSL: (distro: string) => Promise<boolean>;
         installPythonInWSL: (distro: string) => Promise<boolean>;

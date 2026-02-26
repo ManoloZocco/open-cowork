@@ -5,6 +5,7 @@
  *
  * Currently:
  * - macOS: bundles `cliclick` into `resources/tools/darwin-{arch}/bin/cliclick`
+ * - Linux: creates wrapper launchers in `resources/tools/linux-x64/bin/*`
  *
  * This makes packaged apps work without requiring end users to install Homebrew tools.
  */
@@ -56,13 +57,80 @@ function copyExecutable(src, dest) {
   console.log(`✓ Bundled: ${src} -> ${dest}`);
 }
 
+function writeWrapperScript(dest, commandName) {
+  ensureDir(path.dirname(dest));
+  const script = `#!/usr/bin/env bash
+set -euo pipefail
+
+if command -v "${commandName}" >/dev/null 2>&1; then
+  exec "${commandName}" "$@"
+fi
+
+echo "[open-cowork gui-tools] Missing required command: ${commandName}" >&2
+echo "Install it on your Linux system and retry." >&2
+exit 127
+`;
+  fs.writeFileSync(dest, script, 'utf8');
+  fs.chmodSync(dest, 0o755);
+  console.log(`✓ Created wrapper: ${dest} -> ${commandName}`);
+}
+
+function prepareLinuxTools(projectRoot) {
+  const outDir = path.join(projectRoot, 'resources', 'tools', 'linux-x64', 'bin');
+  ensureDir(outDir);
+
+  const wrappers = [
+    'xdotool',
+    'xrandr',
+    'xwininfo',
+    'import',
+    'scrot',
+    'gnome-screenshot',
+    'grim',
+    'slurp',
+    'ydotool',
+    'wtype',
+    'wl-copy',
+    'wl-paste',
+    'spectacle',
+  ];
+
+  wrappers.forEach((cmd) => {
+    writeWrapperScript(path.join(outDir, cmd), cmd);
+  });
+
+  const sessionType = (process.env.XDG_SESSION_TYPE || '').toLowerCase();
+  const strict = process.argv.includes('--strict') || process.env.OPEN_COWORK_GUI_TOOLS_STRICT === '1';
+  const required = sessionType === 'wayland' ? ['import', 'grim', 'slurp'] : ['import', 'xdotool', 'xrandr'];
+  const missingRequired = required.filter((cmd) => !tryExecFile('/usr/bin/which', [cmd]));
+
+  if (missingRequired.length > 0) {
+    const msg =
+      `[prepare:gui-tools] Missing Linux GUI dependencies for ${sessionType || 'x11'}: ${missingRequired.join(', ')}\n` +
+      `Install suggested packages on Ubuntu/KDE:\n` +
+      `  sudo apt install -y xdotool x11-utils imagemagick grim slurp wl-clipboard\n`;
+    if (strict) {
+      console.error(msg);
+      process.exitCode = 1;
+    } else {
+      console.warn(msg);
+    }
+  }
+}
+
 function main() {
-  if (process.platform !== 'darwin') {
-    console.log('[prepare:gui-tools] Non-macOS platform, skipping.');
+  const projectRoot = path.join(__dirname, '..');
+
+  if (process.platform === 'linux') {
+    prepareLinuxTools(projectRoot);
     return;
   }
 
-  const projectRoot = path.join(__dirname, '..');
+  if (process.platform !== 'darwin') {
+    console.log('[prepare:gui-tools] Unsupported platform for GUI tool bundling, skipping.');
+    return;
+  }
+
   const toolsRoot = path.join(projectRoot, 'resources', 'tools');
   const outDirs = {
     arm64: path.join(toolsRoot, 'darwin-arm64', 'bin'),

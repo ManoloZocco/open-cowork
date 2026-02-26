@@ -70,6 +70,18 @@ export interface LimaStatus {
   pythonVersion?: string;
 }
 
+export interface LinuxContainerStatus {
+  available: boolean;
+  runtime?: 'podman' | 'docker';
+  rootless?: boolean;
+  version?: string;
+  image?: string;
+  imageAvailable?: boolean;
+  sessionType?: 'x11' | 'wayland' | 'tty' | 'unknown';
+  desktop?: string;
+  missingGuiTools?: string[];
+}
+
 export interface SandboxExecutor {
   initialize(config: SandboxConfig): Promise<void>;
   executeCommand(command: string, cwd?: string, env?: Record<string, string>): Promise<ExecutionResult>;

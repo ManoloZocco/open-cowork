@@ -3,7 +3,8 @@
  * 
  * Automatically selects the appropriate executor based on platform:
  * - Windows: Uses WSL2 for isolated execution
- * - Mac/Linux: Uses native execution (with warnings)
+ * - macOS: Uses Lima VM for isolated execution
+ * - Linux: Uses rootless container runtime (Podman/Docker) when available
  * 
  * Provides a unified interface for:
  * - Command execution
@@ -15,6 +16,7 @@ import { dialog, BrowserWindow } from 'electron';
 import { log, logWarn, logError } from '../utils/logger';
 import { WSLBridge, pathConverter } from './wsl-bridge';
 import { LimaBridge, limaPathConverter } from './lima-bridge';
+import { LinuxContainerBridge } from './linux-container-bridge';
 import { NativeExecutor } from './native-executor';
 import { getSandboxBootstrap } from './sandbox-bootstrap';
 import { configStore } from '../config/config-store';
@@ -25,10 +27,11 @@ import type {
   DirectoryEntry,
   WSLStatus,
   LimaStatus,
+  LinuxContainerStatus,
   PathConverter,
 } from './types';
 
-export type SandboxMode = 'wsl' | 'lima' | 'native' | 'none';
+export type SandboxMode = 'wsl' | 'lima' | 'linux-container' | 'native' | 'none';
 
 export interface SandboxAdapterConfig extends SandboxConfig {
   /** Force native execution even on Windows (not recommended) */
@@ -43,6 +46,7 @@ interface SandboxState {
   mode: SandboxMode;
   wslStatus?: WSLStatus;
   limaStatus?: LimaStatus;
+  linuxContainerStatus?: LinuxContainerStatus;
   initialized: boolean;
   workspacePath: string;
 }
@@ -82,6 +86,13 @@ export class SandboxAdapter implements SandboxExecutor {
   }
 
   /**
+   * Check if sandbox is using Linux container runtime
+   */
+  get isLinuxContainer(): boolean {
+    return this.state.mode === 'linux-container';
+  }
+
+  /**
    * Check if sandbox is initialized
    */
   get initialized(): boolean {
@@ -100,6 +111,13 @@ export class SandboxAdapter implements SandboxExecutor {
    */
   get limaStatus(): LimaStatus | undefined {
     return this.state.limaStatus;
+  }
+
+  /**
+   * Get Linux container status (if applicable)
+   */
+  get linuxContainerStatus(): LinuxContainerStatus | undefined {
+    return this.state.linuxContainerStatus;
   }
 
   /**
@@ -138,8 +156,11 @@ export class SandboxAdapter implements SandboxExecutor {
     } else if (platform === 'darwin' && !config.forceNative) {
       // macOS: Try to use Lima
       await this.initializeLima(config);
+    } else if (platform === 'linux' && !config.forceNative) {
+      // Linux: Try to use rootless container sandbox
+      await this.initializeLinuxContainer(config);
     } else {
-      // Linux or force native: Use native execution
+      // force native: Use native execution
       await this.initializeNative(config);
     }
 
@@ -276,6 +297,49 @@ export class SandboxAdapter implements SandboxExecutor {
     } catch (error) {
       logError('[SandboxAdapter] Failed to initialize Lima bridge:', error);
       await this.showLimaInitFailedWarning(config, error);
+      await this.initializeNative(config);
+    }
+  }
+
+  /**
+   * Initialize Linux rootless container sandbox
+   */
+  private async initializeLinuxContainer(config: SandboxAdapterConfig): Promise<void> {
+    log('[SandboxAdapter] Checking Linux container runtime availability...');
+
+    const bootstrap = getSandboxBootstrap();
+    let linuxContainerStatus = bootstrap.getCachedLinuxContainerStatus();
+
+    if (linuxContainerStatus) {
+      log('[SandboxAdapter] Using cached Linux container status from bootstrap');
+    } else {
+      log('[SandboxAdapter] No cached status, checking Linux container runtime...');
+      linuxContainerStatus = await LinuxContainerBridge.checkLinuxContainerStatus();
+    }
+
+    this.state.linuxContainerStatus = linuxContainerStatus;
+    log('[SandboxAdapter] Linux container status:', JSON.stringify(linuxContainerStatus, null, 2));
+
+    if (!linuxContainerStatus.available) {
+      log('[SandboxAdapter] [X] Linux rootless container runtime not available');
+      await this.showLinuxContainerNotAvailableWarning(config, linuxContainerStatus);
+      await this.initializeNative(config);
+      return;
+    }
+
+    try {
+      const linuxBridge = new LinuxContainerBridge();
+      await linuxBridge.initialize(config);
+
+      this.executor = linuxBridge;
+      this.state.mode = 'linux-container';
+      log('[SandboxAdapter] [OK] Linux container sandbox initialized successfully');
+      log('[SandboxAdapter] =============================================');
+      log('[SandboxAdapter] SANDBOX MODE: Linux Container (Rootless Isolated Runtime)');
+      log('[SandboxAdapter] =============================================');
+    } catch (error) {
+      logError('[SandboxAdapter] Failed to initialize Linux container bridge:', error);
+      await this.showLinuxContainerInitFailedWarning(config, error);
       await this.initializeNative(config);
     }
   }
@@ -465,6 +529,57 @@ export class SandboxAdapter implements SandboxExecutor {
       message: 'Failed to initialize Lima sandbox.',
       detail: `Error: ${errorMessage}\n\n` +
         'Commands will be executed directly on macOS without sandbox isolation.',
+      buttons: ['OK'],
+    });
+  }
+
+  private async showLinuxContainerNotAvailableWarning(
+    config: SandboxAdapterConfig,
+    status?: LinuxContainerStatus
+  ): Promise<void> {
+    const runtimeHint = status?.runtime
+      ? `${status.runtime} detected but rootless mode is not ready.`
+      : 'No rootless Podman/Docker runtime detected.';
+    const missingTools = status?.missingGuiTools?.length
+      ? `\n\nMissing GUI tools (recommended): ${status.missingGuiTools.join(', ')}`
+      : '';
+
+    if (!config.mainWindow) {
+      logWarn(`[SandboxAdapter] Linux container sandbox unavailable: ${runtimeHint}`);
+      return;
+    }
+
+    await dialog.showMessageBox(config.mainWindow, {
+      type: 'warning',
+      title: 'Linux Sandbox Not Available',
+      message: 'Rootless Linux container sandbox is not available.',
+      detail:
+        `${runtimeHint}\n\n` +
+        'For secure isolation on Linux, install and configure Podman rootless (recommended) or Docker rootless.' +
+        missingTools +
+        '\n\nFalling back to native mode (less secure).',
+      buttons: ['Continue with Native Mode'],
+    });
+  }
+
+  private async showLinuxContainerInitFailedWarning(
+    config: SandboxAdapterConfig,
+    error: unknown
+  ): Promise<void> {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+
+    if (!config.mainWindow) {
+      logWarn('[SandboxAdapter] Linux container init failed, no window to show dialog');
+      return;
+    }
+
+    await dialog.showMessageBox(config.mainWindow, {
+      type: 'warning',
+      title: 'Linux Sandbox Initialization Failed',
+      message: 'Failed to initialize Linux container sandbox.',
+      detail:
+        `Error: ${errorMessage}\n\n` +
+        'Commands will be executed directly on Linux without sandbox isolation.',
       buttons: ['OK'],
     });
   }

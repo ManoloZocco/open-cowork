@@ -264,6 +264,7 @@ export type ClientEvent =
 // Sandbox setup types (app startup)
 export type SandboxSetupPhase = 
   | 'checking'      // Checking WSL/Lima availability
+  | 'installing_runtime' // Checking/preparing runtime dependencies
   | 'creating'      // Creating Lima instance (macOS only)
   | 'starting'      // Starting Lima instance (macOS only)  
   | 'installing_node'   // Installing Node.js

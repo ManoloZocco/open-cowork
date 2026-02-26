@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-blue" alt="Platform" />
+  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-blue" alt="Platform" />
   <img src="https://img.shields.io/badge/License-MIT-green" alt="License" />
   <img src="https://img.shields.io/badge/Node.js-18+-brightgreen" alt="Node.js" />
 </p>
@@ -27,7 +27,7 @@
 
 ## 📖 Introduction
 
-**Open Cowork** is an open-source implementation of **Claude Cowork**, with one-click installers for **Windows** and **macOS**—no coding required.
+**Open Cowork** is an open-source implementation of **Claude Cowork**, with one-click installers for **Windows**, **macOS**, and **Linux**—no coding required.
 
 It provides a sandboxed workspace where AI can manage files, generate professional outputs (PPTX, DOCX, XLSX, etc.) through our built-in **Skills** system, and **connect to desktop apps via MCP** (browser, Notion, etc.) for better collaboration.
 
@@ -45,7 +45,7 @@ It provides a sandboxed workspace where AI can manage files, generate profession
 | OpenClaw      | ✓            | ✓              | ✗             |
 | OpenCowork    | ✓            | ✓              | ✓             |
 
-- **One-Click Install, Ready to Use**: Pre-built installers for Windows and macOS, no environment setup needed—just download and start using.
+- **One-Click Install, Ready to Use**: Pre-built installers for Windows, macOS, and Linux, no environment setup needed—just download and start using.
 - **Flexible Model Support**: Supports **Claude**, **OpenAI-compatible APIs**, and Chinese models like **GLM**, **MiniMax**, **Kimi**. Use your OpenRouter, Anthropic, or other API keys with flexible configuration. More models coming soon!
 - **Remote Control**: Connect to collaboration platforms like **Feishu (Lark)** and other remote services to automate workflows and cross-platform operations.
 - **GUI Operation**: Control and interact with various desktop GUI applications on your computer. **Recommended model: Gemini-3-Pro** for optimal GUI understanding and control.
@@ -55,7 +55,7 @@ It provides a sandboxed workspace where AI can manage files, generate profession
 - **Multimodal Input**: Drag & drop files and images directly into the chat input for seamless multimodal interaction.
 - **Real-time Trace**: Watch AI reasoning and tool execution in the Trace Panel.
 - **Secure Workspace**: All operations confined to your chosen workspace folder.
-- **VM-Level Isolation**: WSL2 (Windows) and Lima (macOS) VM isolation—all commands execute in an isolated VM to protect your host system.
+- **Strong Isolation by Platform**: WSL2 (Windows), Lima (macOS), and rootless container sandbox (Linux) for isolated command execution.
 - **UI Enhancements**: Beautiful and flexible UI design, system language switching, comprehensive MCP/Skills/Tools call display.
 
 <a id="demo"></a>
@@ -94,6 +94,7 @@ Get the latest version from our [Releases Page](https://github.com/OpenCoworkAI/
 |----------|-----------|
 | **Windows** | `.exe` |
 | **macOS** (Apple Silicon) | `.dmg` |
+| **Linux** | `.AppImage`, `.deb`, `.rpm` |
 
 ### Option 2: Build from Source
 
@@ -107,7 +108,9 @@ npm run rebuild
 npm run dev
 ```
 
-To build the installer locally: `npm run build`
+To build installers locally:
+- `npm run build` (current platform default)
+- `npm run build:linux` (Linux AppImage + .deb + .rpm)
 
 ### Security Configuration: 🔒 Sandbox Support
 
@@ -118,9 +121,11 @@ Open Cowork provides **multi-level sandbox protection** to keep your system safe
 | **Basic** | All | Path Guard | File operations restricted to workspace folder |
 | **Enhanced** | Windows | WSL2 | Commands execute in isolated Linux VM |
 | **Enhanced** | macOS | Lima | Commands execute in isolated Linux VM |
+| **Enhanced** | Linux | Rootless Podman/Docker | Commands execute in isolated rootless container |
 
 - **Windows (WSL2)**: When WSL2 is detected, all Bash commands are automatically routed to a Linux VM. The workspace is synced bidirectionally.
 - **macOS (Lima)**: When [Lima](https://lima-vm.io/) is installed (`brew install lima`), commands run in an Ubuntu VM with `/Users` mounted.
+- **Linux (Rootless Container)**: When Podman rootless (recommended) or Docker rootless is available, commands run in an isolated container with the workspace bind-mounted.
 - **Fallback**: If no VM is available, commands run natively with path-based restrictions.
 
 **Setup (Optional, Recommended)**
@@ -132,6 +137,16 @@ Lima is auto-detected if installed. Install command:
 ```bash
 brew install lima
 # Open Cowork will automatically create and manage a 'claude-sandbox' VM
+```
+
+- **Linux (Ubuntu/KDE neon)**:
+```bash
+sudo apt update
+sudo apt install -y podman xdotool x11-utils imagemagick grim slurp wl-clipboard
+# Optional checks:
+npm run preflight:linux
+npm run smoke:linux:sandbox
+npm run smoke:linux:gui
 ```
 
 ---
@@ -252,7 +267,7 @@ open-cowork/
 - [x] **Core**: Stable Windows & macOS Installers
 - [x] **Security**: Full Filesystem Sandboxing
 - [x] **Skills**: PPTX, DOCX, PDF, XLSX Support + Custom Skill Management
-- [x] **VM Sandbox**: WSL2 (Windows) and Lima (macOS) isolation support
+- [x] **Isolated Sandbox**: WSL2 (Windows), Lima (macOS), rootless container runtime (Linux)
 - [x] **MCP Connectors**: Custom connector support for external service integration
 - [x] **Rich Input**: File upload and image input in chat
 - [x] **Multi-Model**: OpenAI-compatible API support (iterating)

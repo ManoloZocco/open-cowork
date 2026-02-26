@@ -9,11 +9,13 @@
 import { log, logError } from '../utils/logger';
 import { WSLBridge } from './wsl-bridge';
 import { LimaBridge } from './lima-bridge';
+import { LinuxContainerBridge } from './linux-container-bridge';
 import { configStore } from '../config/config-store';
-import type { WSLStatus, LimaStatus } from './types';
+import type { WSLStatus, LimaStatus, LinuxContainerStatus } from './types';
 
 export type SandboxSetupPhase = 
   | 'checking'      // Checking WSL/Lima availability
+  | 'installing_runtime' // Installing/checking runtime dependencies
   | 'creating'      // Creating Lima instance (macOS only)
   | 'starting'      // Starting Lima instance (macOS only)  
   | 'installing_node'   // Installing Node.js
@@ -33,9 +35,10 @@ export interface SandboxSetupProgress {
 }
 
 export interface SandboxBootstrapResult {
-  mode: 'wsl' | 'lima' | 'native';
+  mode: 'wsl' | 'lima' | 'linux-container' | 'native';
   wslStatus?: WSLStatus;
   limaStatus?: LimaStatus;
+  linuxContainerStatus?: LinuxContainerStatus;
   error?: string;
 }
 
@@ -55,6 +58,7 @@ export class SandboxBootstrap {
   // Cached status for quick access by SandboxAdapter
   private cachedWSLStatus: WSLStatus | null = null;
   private cachedLimaStatus: LimaStatus | null = null;
+  private cachedLinuxContainerStatus: LinuxContainerStatus | null = null;
 
   static getInstance(): SandboxBootstrap {
     if (!SandboxBootstrap.instance) {
@@ -75,6 +79,13 @@ export class SandboxBootstrap {
    */
   getCachedLimaStatus(): LimaStatus | null {
     return this.cachedLimaStatus;
+  }
+
+  /**
+   * Get cached Linux container status (available after bootstrap completes)
+   */
+  getCachedLinuxContainerStatus(): LinuxContainerStatus | null {
+    return this.cachedLinuxContainerStatus;
   }
 
   /**
@@ -109,6 +120,7 @@ export class SandboxBootstrap {
     this.result = null;
     this.cachedWSLStatus = null;
     this.cachedLimaStatus = null;
+    this.cachedLinuxContainerStatus = null;
   }
 
   /**
@@ -154,14 +166,7 @@ export class SandboxBootstrap {
       } else if (platform === 'darwin') {
         return await this.bootstrapLima();
       } else {
-        // Linux - native mode
-        this.reportProgress({
-          phase: 'skipped',
-          message: 'Using native execution mode',
-          detail: 'Linux runs commands directly',
-          progress: 100,
-        });
-        return { mode: 'native' };
+        return await this.bootstrapLinuxContainer();
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
@@ -421,6 +426,67 @@ export class SandboxBootstrap {
     });
 
     return { mode: 'lima', limaStatus };
+  }
+
+  /**
+   * Bootstrap Linux container sandbox
+   */
+  private async bootstrapLinuxContainer(): Promise<SandboxBootstrapResult> {
+    this.reportProgress({
+      phase: 'checking',
+      message: 'Checking Linux sandbox runtime...',
+      detail: 'Looking for rootless Podman/Docker',
+      progress: 10,
+    });
+
+    const linuxContainerStatus = await LinuxContainerBridge.checkLinuxContainerStatus();
+    this.cachedLinuxContainerStatus = linuxContainerStatus;
+
+    if (!linuxContainerStatus.available || !linuxContainerStatus.runtime) {
+      this.reportProgress({
+        phase: 'skipped',
+        message: 'Linux sandbox runtime not available',
+        detail: 'Using native execution mode (install rootless Podman/Docker for isolation)',
+        progress: 100,
+      });
+      return { mode: 'native', linuxContainerStatus };
+    }
+
+    this.reportProgress({
+      phase: 'installing_runtime',
+      message: 'Preparing Linux sandbox image...',
+      detail: `${linuxContainerStatus.runtime} rootless detected`,
+      progress: 45,
+    });
+
+    const image = linuxContainerStatus.image || process.env.OPEN_COWORK_LINUX_SANDBOX_IMAGE || 'docker.io/library/node:20-bookworm-slim';
+    const imageReady = await LinuxContainerBridge.ensureImage(linuxContainerStatus.runtime, image);
+    linuxContainerStatus.image = image;
+    linuxContainerStatus.imageAvailable = imageReady;
+
+    if (!imageReady) {
+      this.reportProgress({
+        phase: 'error',
+        message: 'Linux sandbox image preparation failed',
+        detail: `Could not pull image ${image}`,
+        error: `Failed to prepare sandbox image: ${image}`,
+      });
+      return {
+        mode: 'native',
+        linuxContainerStatus,
+        error: `Failed to prepare sandbox image: ${image}`,
+      };
+    }
+
+    this.cachedLinuxContainerStatus = linuxContainerStatus;
+    this.reportProgress({
+      phase: 'ready',
+      message: 'Linux container sandbox ready',
+      detail: `${linuxContainerStatus.runtime} rootless (${image})`,
+      progress: 100,
+    });
+
+    return { mode: 'linux-container', linuxContainerStatus };
   }
 }
 

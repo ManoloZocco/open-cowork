@@ -14,6 +14,7 @@ interface Props {
 // Phase display configuration
 const phaseConfig: Record<SandboxSetupPhase, { icon: string }> = {
   checking: { icon: '🔍' },
+  installing_runtime: { icon: '🧱' },
   creating: { icon: '📦' },
   starting: { icon: '🚀' },
   installing_node: { icon: '💚' },
@@ -54,6 +55,22 @@ export function SandboxSetupDialog({ progress, onComplete }: Props) {
     }
   };
 
+  const handleRetrySetup = async () => {
+    if (!window.electronAPI?.sandbox?.retrySetup) {
+      return;
+    }
+    setIsRetrying(true);
+    try {
+      const result = await window.electronAPI.sandbox.retrySetup();
+      if (!result?.success) {
+        setIsRetrying(false);
+      }
+    } catch (error) {
+      console.error('[SandboxSetupDialog] Retry setup failed:', error);
+      setIsRetrying(false);
+    }
+  };
+
   useEffect(() => {
     if (progress?.phase === 'ready' || progress?.phase === 'skipped') {
       // Delay before fade out for success states
@@ -77,7 +94,9 @@ export function SandboxSetupDialog({ progress, onComplete }: Props) {
   const config = phaseConfig[progress.phase];
   const isComplete = progress.phase === 'ready' || progress.phase === 'skipped';
   const isError = progress.phase === 'error';
-  const isMac = window.electronAPI?.platform === 'darwin';
+  const platform = window.electronAPI?.platform;
+  const isMac = platform === 'darwin';
+  const isLinux = platform === 'linux';
 
   return (
     <div 
@@ -170,10 +189,19 @@ export function SandboxSetupDialog({ progress, onComplete }: Props) {
                   {isRetrying ? 'Restarting Lima...' : 'Try Restarting Lima'}
                 </button>
               )}
+              {isLinux && (
+                <button
+                  onClick={handleRetrySetup}
+                  disabled={isRetrying}
+                  className="w-full py-2.5 px-4 bg-accent hover:bg-accent/90 text-white rounded-xl font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {isRetrying ? 'Retrying Linux sandbox...' : 'Retry Linux Sandbox Setup'}
+                </button>
+              )}
               <button
                 onClick={handleClose}
                 className={`w-full py-2.5 px-4 rounded-xl font-medium transition-colors ${
-                  isMac
+                  isMac || isLinux
                     ? 'bg-surface hover:bg-surface-muted text-text-primary border border-border'
                     : 'bg-accent hover:bg-accent/90 text-white'
                 }`}
@@ -199,7 +227,7 @@ export function SandboxSetupDialog({ progress, onComplete }: Props) {
         <div className="px-6 py-4 bg-surface-muted border-t border-border">
           <div className="flex items-center justify-between text-xs text-text-muted">
             <span>
-              {window.electronAPI?.platform === 'win32' ? 'WSL2 Sandbox' : window.electronAPI?.platform === 'darwin' ? 'Lima Sandbox' : 'Native Mode'}
+              {platform === 'win32' ? 'WSL2 Sandbox' : platform === 'darwin' ? 'Lima Sandbox' : platform === 'linux' ? 'Linux Container Sandbox' : 'Native Mode'}
             </span>
             {!isComplete && !isError && (
               <span className="flex items-center gap-2">

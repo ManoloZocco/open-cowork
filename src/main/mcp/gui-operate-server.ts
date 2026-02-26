@@ -1,7 +1,7 @@
 /**
  * GUI Operate MCP Server
  * 
- * This MCP server provides GUI automation capabilities for macOS and Windows:
+ * This MCP server provides GUI automation capabilities for macOS, Windows, and Linux:
  * - Click (single click, double click, right click)
  * - Type text (keyboard input)
  * - Scroll (mouse wheel scroll)
@@ -16,6 +16,7 @@
  * Platform-specific tools:
  * - macOS: Uses cliclick (brew install cliclick) and AppleScript
  * - Windows: Uses PowerShell with .NET System.Windows.Forms
+ * - Linux: Uses xdotool/xrandr/import (X11) and grim/slurp/spectacle fallbacks (Wayland)
  */
 
 // Bootstrap logging - log as early as possible
@@ -35,12 +36,16 @@ import { promisify } from 'util';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import * as http from 'http';
+import * as https from 'https';
+import { URL } from 'url';
+import Anthropic from '@anthropic-ai/sdk';
 writeMCPLog('Imported Node.js built-in modules', 'Bootstrap');
 
 const execAsync = promisify(exec);
 
 // Detect platform
-const PLATFORM = os.platform(); // 'darwin' for macOS, 'win32' for Windows
+const PLATFORM = os.platform(); // 'darwin' | 'win32' | 'linux'
 writeMCPLog(`Platform detected: ${PLATFORM}`, 'Bootstrap');
 
 // Get Open Cowork data directory for persistent storage
@@ -49,7 +54,9 @@ writeMCPLog(`Platform detected: ${PLATFORM}`, 'Bootstrap');
 // - Windows: %APPDATA%/open-cowork
 const OPEN_COWORK_DATA_DIR = PLATFORM === 'win32'
   ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'open-cowork')
-  : path.join(os.homedir(), 'Library', 'Application Support', 'open-cowork');
+  : PLATFORM === 'darwin'
+    ? path.join(os.homedir(), 'Library', 'Application Support', 'open-cowork')
+    : path.join(os.homedir(), '.config', 'open-cowork');
 
 // Directory for storing GUI operate files (screenshots, etc.)
 const GUI_OPERATE_DIR = path.join(OPEN_COWORK_DATA_DIR, 'gui_operate');
@@ -169,7 +176,6 @@ async function inferMostRecentAppNameFromDisk(): Promise<string | null> {
 
 async function restoreLastAppContext(): Promise<boolean> {
   if (currentAppName) return true;
-  if (os.platform() !== 'darwin') return false;
 
   try {
     const data = await fs.readFile(GUI_LAST_APP_FILE, 'utf-8');
@@ -759,6 +765,74 @@ async function resolveBundledExecutable(relativeFromResources: string): Promise<
 }
 
 let cachedCliclickPath: string | null | undefined;
+const linuxToolPathCache = new Map<string, string | null>();
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function getLinuxSessionType(): 'x11' | 'wayland' | 'unknown' {
+  if (PLATFORM !== 'linux') return 'unknown';
+  const raw = (process.env.XDG_SESSION_TYPE || '').trim().toLowerCase();
+  if (raw === 'x11' || raw === 'wayland') return raw;
+  if (process.env.WAYLAND_DISPLAY) return 'wayland';
+  if (process.env.DISPLAY) return 'x11';
+  return 'unknown';
+}
+
+async function resolveLinuxToolPath(toolName: string): Promise<string | null> {
+  if (PLATFORM !== 'linux') return null;
+  if (linuxToolPathCache.has(toolName)) {
+    return linuxToolPathCache.get(toolName) ?? null;
+  }
+
+  const arch = process.arch === 'x64' ? 'x64' : process.arch;
+  const bundledArch = await resolveBundledExecutable(path.join('tools', `linux-${arch}`, 'bin', toolName));
+  const bundledFallback = await resolveBundledExecutable(path.join('tools', 'linux-x64', 'bin', toolName));
+  const bundled = bundledArch || bundledFallback;
+  if (bundled) {
+    linuxToolPathCache.set(toolName, bundled);
+    return bundled;
+  }
+
+  try {
+    const { stdout } = await executeCommand(`/usr/bin/which ${toolName}`, 2000);
+    const found = stdout.trim().split(/\r?\n/).filter(Boolean)[0] || null;
+    linuxToolPathCache.set(toolName, found);
+    return found;
+  } catch {
+    linuxToolPathCache.set(toolName, null);
+    return null;
+  }
+}
+
+async function requireLinuxToolPath(toolName: string, extraHint?: string): Promise<string> {
+  const resolved = await resolveLinuxToolPath(toolName);
+  if (resolved) return resolved;
+
+  const sessionType = getLinuxSessionType();
+  const hint = extraHint
+    ? `\n${extraHint}`
+    : `\nInstall it first (Ubuntu/KDE): sudo apt install -y ${toolName}`;
+  throw new Error(
+    `Linux GUI tool "${toolName}" is not available (session=${sessionType}).${hint}`
+  );
+}
+
+function ensureLinuxInputSessionReady(): void {
+  if (PLATFORM !== 'linux') return;
+  const sessionType = getLinuxSessionType();
+  if (sessionType !== 'wayland') return;
+
+  // On pure Wayland sessions, xdotool usually cannot control global input.
+  // If DISPLAY exists, an XWayland bridge may still be usable for some apps.
+  if (!process.env.DISPLAY) {
+    throw new Error(
+      'Wayland session detected without X11 compatibility (DISPLAY is not set). ' +
+        'Global GUI input automation requires an X11 session (recommended on KDE neon) or a dedicated Wayland backend setup.'
+    );
+  }
+}
 
 async function resolveCliclickPath(): Promise<string | null> {
   if (cachedCliclickPath !== undefined) return cachedCliclickPath;
@@ -936,6 +1010,28 @@ async function resolvePythonExec(): Promise<PythonExec | null> {
     }
   }
 
+  if (PLATFORM === 'linux') {
+    const packaged = await resolveBundledExecutable(path.join('python', 'bin', 'python3'));
+    const devBundled = await resolveBundledExecutable(path.join('python', 'linux-x64', 'bin', 'python3'));
+    const pythonPath = packaged || devBundled;
+
+    if (pythonPath) {
+      const pythonRoot = path.resolve(pythonPath, '..', '..');
+      const extraSite = path.join(pythonRoot, 'site-packages');
+      const env: NodeJS.ProcessEnv = {
+        ...baseEnv,
+        PYTHONNOUSERSITE: '1',
+        PYTHONDONTWRITEBYTECODE: '1',
+        PYTHONUTF8: '1',
+      };
+      if (await pathExists(extraSite)) {
+        env.PYTHONPATH = [extraSite, baseEnv.PYTHONPATH].filter(Boolean).join(path.delimiter);
+      }
+      cachedPythonExec = { python: pythonPath, pythonRoot, env };
+      return cachedPythonExec;
+    }
+  }
+
   // Generic fallback for other platforms: rely on PATH if available
   try {
     const { stdout } = await executeCommand(PLATFORM === 'win32' ? 'where python' : '/usr/bin/which python3', 2000);
@@ -970,6 +1066,7 @@ async function executePython(
     throw new Error(
       'Python 3 runtime not found.\n' +
       '- Recommended (macOS): bundle Python into the app at Resources/python/bin/python3 with required packages (Pillow, pyobjc-framework-Quartz)\n' +
+      '- Recommended (Linux): ensure python3 is installed and provide Pillow in Resources/python/linux-x64/site-packages (or system site-packages)\n' +
       '- Or install python3 + dependencies on this machine.\n'
     );
   }
@@ -2101,6 +2198,325 @@ Write-Output "SUCCESS"
 }
 
 // ============================================================================
+// Linux-specific Helper Functions
+// ============================================================================
+
+function parseXrandrDisplays(output: string): DisplayInfo[] {
+  const displays: DisplayInfo[] = [];
+  const lines = output.split(/\r?\n/);
+  let idx = 0;
+
+  for (const line of lines) {
+    const connected = line.match(
+      /^([A-Za-z0-9\-_.]+)\s+connected\s+(primary\s+)?(\d+)x(\d+)\+(-?\d+)\+(-?\d+)/
+    );
+    if (!connected) continue;
+
+    const [, name, primary, width, height, originX, originY] = connected;
+    displays.push({
+      index: idx++,
+      name,
+      isMain: Boolean(primary),
+      width: parseInt(width, 10),
+      height: parseInt(height, 10),
+      originX: parseInt(originX, 10),
+      originY: parseInt(originY, 10),
+      scaleFactor: 1,
+    });
+  }
+
+  if (displays.length > 0 && !displays.some((d) => d.isMain)) {
+    displays[0].isMain = true;
+  }
+
+  return displays;
+}
+
+async function linuxGetDisplayConfiguration(): Promise<DisplayConfiguration> {
+  const now = Date.now();
+  const sessionType = getLinuxSessionType();
+
+  // Preferred path: xrandr (works reliably on X11 and many XWayland setups)
+  const xrandrPath = await resolveLinuxToolPath('xrandr');
+  if (xrandrPath) {
+    try {
+      const { stdout } = await executeCommand(`${shellQuote(xrandrPath)} --query`, 5000);
+      const displays = parseXrandrDisplays(stdout);
+      if (displays.length > 0) {
+        const main = displays.find((d) => d.isMain) || displays[0];
+        const totalWidth = displays.reduce((max, d) => Math.max(max, d.originX + d.width), 0);
+        const totalHeight = displays.reduce((max, d) => Math.max(max, d.originY + d.height), 0);
+        const config: DisplayConfiguration = {
+          displays,
+          totalWidth,
+          totalHeight,
+          mainDisplayIndex: main.index,
+        };
+        displayConfigCache = config;
+        displayConfigCacheTime = now;
+        return config;
+      }
+    } catch (error: any) {
+      writeMCPLog(
+        `[linuxGetDisplayConfiguration] xrandr detection failed (${sessionType}): ${error.message}`,
+        'Display Detection'
+      );
+    }
+  }
+
+  // Fallback: xdpyinfo dimensions (single display assumption)
+  try {
+    const { stdout } = await executeCommand('xdpyinfo', 5000);
+    const match = stdout.match(/(\d+)x(\d+)\s+pixels/);
+    if (match) {
+      const width = parseInt(match[1], 10);
+      const height = parseInt(match[2], 10);
+      const config: DisplayConfiguration = {
+        displays: [
+          {
+            index: 0,
+            name: 'Display 0',
+            isMain: true,
+            width,
+            height,
+            originX: 0,
+            originY: 0,
+            scaleFactor: 1,
+          },
+        ],
+        totalWidth: width,
+        totalHeight: height,
+        mainDisplayIndex: 0,
+      };
+      displayConfigCache = config;
+      displayConfigCacheTime = now;
+      return config;
+    }
+  } catch {
+    // ignore fallback errors
+  }
+
+  throw new Error(
+    `Failed to detect Linux displays (session=${sessionType}). ` +
+      'Install xrandr (X11) or run in an X11-compatible session.'
+  );
+}
+
+function mapLinuxModifier(modifier: string): string {
+  const value = modifier.toLowerCase();
+  if (value === 'ctrl' || value === 'control') return 'ctrl';
+  if (value === 'shift') return 'shift';
+  if (value === 'alt' || value === 'option') return 'alt';
+  if (value === 'cmd' || value === 'command' || value === 'super') return 'super';
+  return value;
+}
+
+async function linuxMoveMouseGlobal(globalX: number, globalY: number): Promise<void> {
+  ensureLinuxInputSessionReady();
+  const xdotoolPath = await requireLinuxToolPath(
+    'xdotool',
+    'For KDE Wayland, switch to an X11 session or install a Wayland input backend.'
+  );
+  await executeCommand(
+    `${shellQuote(xdotoolPath)} mousemove --sync ${Math.round(globalX)} ${Math.round(globalY)}`,
+    5000
+  );
+}
+
+async function linuxPerformClick(
+  globalX: number,
+  globalY: number,
+  clickType: 'single' | 'double' | 'right' | 'triple',
+  modifiers: string[]
+): Promise<void> {
+  const xdotoolPath = await requireLinuxToolPath('xdotool');
+  await linuxMoveMouseGlobal(globalX, globalY);
+
+  const mappedModifiers = normalizeModifierKeys(modifiers).map(mapLinuxModifier);
+  for (const modifier of mappedModifiers) {
+    await executeCommand(`${shellQuote(xdotoolPath)} keydown ${modifier}`, 3000);
+  }
+
+  const buttonCommand =
+    clickType === 'double'
+      ? `click --repeat 2 --delay 120 1`
+      : clickType === 'right'
+        ? 'click 3'
+        : clickType === 'triple'
+          ? 'click --repeat 3 --delay 120 1'
+          : 'click 1';
+
+  await executeCommand(`${shellQuote(xdotoolPath)} ${buttonCommand}`, 5000);
+
+  for (const modifier of [...mappedModifiers].reverse()) {
+    await executeCommand(`${shellQuote(xdotoolPath)} keyup ${modifier}`, 3000);
+  }
+}
+
+async function linuxPerformType(
+  text: string,
+  pressEnter: boolean,
+  inputMethod: 'auto' | 'keystroke' | 'paste'
+): Promise<void> {
+  ensureLinuxInputSessionReady();
+  const preferredMethod = inputMethod; // Reserved for future Wayland-specific input backends.
+  const xdotoolPath = await requireLinuxToolPath(
+    'xdotool',
+    'Typing requires xdotool on Linux. For Wayland, prefer KDE X11 session for full compatibility.'
+  );
+
+  // Keep behavior deterministic: use xdotool typing for Linux currently.
+  const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  writeMCPLog(`[linuxPerformType] method=${preferredMethod}`, 'Type Operation');
+  await executeCommand(`${shellQuote(xdotoolPath)} type --delay 1 --clearmodifiers -- "${escaped}"`, 20000);
+
+  if (pressEnter) {
+    await executeCommand(`${shellQuote(xdotoolPath)} key Return`, 5000);
+  }
+}
+
+async function linuxPerformKeyPress(key: string, modifiers: string[]): Promise<void> {
+  ensureLinuxInputSessionReady();
+  const xdotoolPath = await requireLinuxToolPath('xdotool');
+
+  const keyMap: Record<string, string> = {
+    enter: 'Return',
+    return: 'Return',
+    tab: 'Tab',
+    escape: 'Escape',
+    esc: 'Escape',
+    space: 'space',
+    delete: 'BackSpace',
+    backspace: 'BackSpace',
+    up: 'Up',
+    down: 'Down',
+    left: 'Left',
+    right: 'Right',
+    home: 'Home',
+    end: 'End',
+    pageup: 'Page_Up',
+    pagedown: 'Page_Down',
+    f1: 'F1',
+    f2: 'F2',
+    f3: 'F3',
+    f4: 'F4',
+    f5: 'F5',
+    f6: 'F6',
+    f7: 'F7',
+    f8: 'F8',
+    f9: 'F9',
+    f10: 'F10',
+    f11: 'F11',
+    f12: 'F12',
+  };
+
+  const normalizedKey = key.toLowerCase();
+  const mappedKey = keyMap[normalizedKey] || key;
+  const mappedModifiers = normalizeModifierKeys(modifiers).map(mapLinuxModifier);
+  const combo = mappedModifiers.length > 0 ? `${mappedModifiers.join('+')}+${mappedKey}` : mappedKey;
+
+  await executeCommand(`${shellQuote(xdotoolPath)} key --clearmodifiers ${combo}`, 5000);
+}
+
+async function linuxPerformScroll(
+  globalX: number,
+  globalY: number,
+  direction: 'up' | 'down' | 'left' | 'right',
+  amount: number
+): Promise<void> {
+  const xdotoolPath = await requireLinuxToolPath('xdotool');
+  await linuxMoveMouseGlobal(globalX, globalY);
+
+  const button = direction === 'up' ? 4 : direction === 'down' ? 5 : direction === 'left' ? 6 : 7;
+  const repeat = Math.max(1, Math.min(50, Math.round(amount)));
+  await executeCommand(`${shellQuote(xdotoolPath)} click --repeat ${repeat} ${button}`, 5000);
+}
+
+async function linuxPerformDrag(
+  fromGlobalX: number,
+  fromGlobalY: number,
+  toGlobalX: number,
+  toGlobalY: number
+): Promise<void> {
+  const xdotoolPath = await requireLinuxToolPath('xdotool');
+  await executeCommand(
+    `${shellQuote(xdotoolPath)} mousemove --sync ${Math.round(fromGlobalX)} ${Math.round(fromGlobalY)} mousedown 1 mousemove --sync ${Math.round(toGlobalX)} ${Math.round(toGlobalY)} mouseup 1`,
+    10000
+  );
+}
+
+async function linuxGetMouseGlobalPosition(): Promise<{ globalX: number; globalY: number }> {
+  const xdotoolPath = await requireLinuxToolPath('xdotool');
+  const { stdout } = await executeCommand(`${shellQuote(xdotoolPath)} getmouselocation --shell`, 3000);
+  const xMatch = stdout.match(/X=(\d+)/);
+  const yMatch = stdout.match(/Y=(\d+)/);
+  if (!xMatch || !yMatch) {
+    throw new Error(`Failed to parse Linux mouse position: ${stdout}`);
+  }
+  return {
+    globalX: parseInt(xMatch[1], 10),
+    globalY: parseInt(yMatch[1], 10),
+  };
+}
+
+async function linuxTakeScreenshot(
+  finalPath: string,
+  displayIndex?: number,
+  region?: { x: number; y: number; width: number; height: number }
+): Promise<void> {
+  const sessionType = getLinuxSessionType();
+  const quotedOutputPath = shellQuote(finalPath);
+
+  let targetRegion: { x: number; y: number; width: number; height: number } | undefined = region;
+
+  if (!targetRegion && displayIndex !== undefined) {
+    const config = await getDisplayConfiguration();
+    const display = config.displays.find((d) => d.index === displayIndex);
+    if (!display) {
+      throw new Error(`Display index ${displayIndex} not found.`);
+    }
+    targetRegion = {
+      x: display.originX,
+      y: display.originY,
+      width: display.width,
+      height: display.height,
+    };
+  } else if (region && displayIndex !== undefined) {
+    const converted = await convertToGlobalCoordinates(region.x, region.y, displayIndex);
+    targetRegion = { x: converted.globalX, y: converted.globalY, width: region.width, height: region.height };
+  }
+
+  if (sessionType === 'wayland') {
+    const spectaclePath = await resolveLinuxToolPath('spectacle');
+    if (spectaclePath && !targetRegion) {
+      await executeCommand(`${shellQuote(spectaclePath)} -b -n -o ${quotedOutputPath}`, 10000);
+      return;
+    }
+
+    const grimPath = await requireLinuxToolPath(
+      'grim',
+      'Wayland screenshot requires grim (and slurp for selection workflows).'
+    );
+    if (targetRegion) {
+      const geometry = `${Math.round(targetRegion.x)},${Math.round(targetRegion.y)} ${Math.round(targetRegion.width)}x${Math.round(targetRegion.height)}`;
+      await executeCommand(`${shellQuote(grimPath)} -g "${geometry}" ${quotedOutputPath}`, 10000);
+      return;
+    }
+    await executeCommand(`${shellQuote(grimPath)} ${quotedOutputPath}`, 10000);
+    return;
+  }
+
+  const importPath = await requireLinuxToolPath('import');
+  if (targetRegion) {
+    const geometry = `${Math.round(targetRegion.width)}x${Math.round(targetRegion.height)}+${Math.round(targetRegion.x)}+${Math.round(targetRegion.y)}`;
+    await executeCommand(`${shellQuote(importPath)} -window root -crop ${geometry} ${quotedOutputPath}`, 10000);
+    return;
+  }
+
+  await executeCommand(`${shellQuote(importPath)} -window root ${quotedOutputPath}`, 10000);
+}
+
+// ============================================================================
 // Display Information Functions
 // ============================================================================
 
@@ -2108,6 +2524,7 @@ Write-Output "SUCCESS"
  * Get display configuration using platform-specific methods
  * - macOS: AppleScript/system_profiler
  * - Windows: PowerShell with System.Windows.Forms
+ * - Linux: xrandr/xdpyinfo
  * Returns information about all connected displays
  */
 async function getDisplayConfiguration(): Promise<DisplayConfiguration> {
@@ -2126,6 +2543,17 @@ async function getDisplayConfiguration(): Promise<DisplayConfiguration> {
       return config;
     } catch (error: any) {
       throw new Error(`Failed to get display information on Windows: ${error.message}`);
+    }
+  }
+
+  if (PLATFORM === 'linux') {
+    try {
+      const config = await linuxGetDisplayConfiguration();
+      displayConfigCache = config;
+      displayConfigCacheTime = now;
+      return config;
+    } catch (error: any) {
+      throw new Error(`Failed to get display information on Linux: ${error.message}`);
     }
   }
   
@@ -2472,8 +2900,8 @@ async function resolveClickCoordinates(
     return convertNormalizedToDisplayCoordinates(xInput, yInput, displayIndex);
   }
 
-  let x = Math.round(xInput);
-  let y = Math.round(yInput);
+  const x = Math.round(xInput);
+  const y = Math.round(yInput);
 
   if (coordinateType === 'auto') {
     const isOutOfBounds = x < 0 || y < 0 || x >= display.width || y >= display.height;
@@ -2526,7 +2954,7 @@ async function performClick(
     await ensureAppContextRestored();
   }
 
-  let localX = x;
+  const localX = x;
   let localY = y;
 
   // Dock auto-hide on macOS can swallow the first click near the bottom edge.
@@ -2564,6 +2992,12 @@ async function performClick(
   // Windows implementation
   if (PLATFORM === 'win32') {
     await windowsPerformClick(globalX, globalY, clickType, modifiers);
+    await addClickToHistory(localX, localY, displayIndex, clickType);
+    return `Performed ${clickType} click at (${localX}, ${localY}) on display ${displayIndex} (global: ${globalX}, ${globalY})`;
+  }
+
+  if (PLATFORM === 'linux') {
+    await linuxPerformClick(globalX, globalY, clickType, modifiers);
     await addClickToHistory(localX, localY, displayIndex, clickType);
     return `Performed ${clickType} click at (${localX}, ${localY}) on display ${displayIndex} (global: ${globalX}, ${globalY})`;
   }
@@ -2635,8 +3069,17 @@ async function performType(
     return `Typed: "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"${pressEnter ? ' and pressed Enter' : ''}`;
   }
 
+  if (PLATFORM === 'linux') {
+    writeMCPLog(
+      `[performType] Linux: Typing text. text length: ${text.length}, inputMethod=${inputMethod}`,
+      'Type Operation'
+    );
+    await linuxPerformType(text, pressEnter, inputMethod);
+    return `Typed: "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"${pressEnter ? ' and pressed Enter' : ''}`;
+  }
+
   // macOS implementation
-  const hasNonAscii = /[^\x00-\x7F]/.test(text);
+  const hasNonAscii = [...text].some(char => (char.codePointAt(0) ?? 0) > 0x7f);
   const usePaste = inputMethod === 'paste' || (inputMethod === 'auto' && hasNonAscii);
 
   // Clipboard-paste method is much more reliable for Unicode/CJK (e.g. Chinese)
@@ -2711,6 +3154,12 @@ async function performKeyPress(
   // Windows implementation
   if (PLATFORM === 'win32') {
     await windowsPerformKeyPress(key, modifiers);
+    const modifierStr = modifiers.length > 0 ? `${modifiers.join('+')}+` : '';
+    return `Pressed: ${modifierStr}${key}`;
+  }
+
+  if (PLATFORM === 'linux') {
+    await linuxPerformKeyPress(key, modifiers);
     const modifierStr = modifiers.length > 0 ? `${modifiers.join('+')}+` : '';
     return `Pressed: ${modifierStr}${key}`;
   }
@@ -2918,6 +3367,11 @@ async function performScroll(
     return `Scrolled ${direction} by ${amount} at (${x}, ${y}) on display ${displayIndex}`;
   }
 
+  if (PLATFORM === 'linux') {
+    await linuxPerformScroll(globalX, globalY, direction, amount);
+    return `Scrolled ${direction} by ${amount} at (${x}, ${y}) on display ${displayIndex}`;
+  }
+
   // macOS implementation
   // First move to the position
   const moveCommand = `m:${globalX},${globalY}`;
@@ -2982,6 +3436,11 @@ async function performDrag(
     return `Dragged from (${fromX}, ${fromY}) to (${toX}, ${toY}) on display ${displayIndex}`;
   }
 
+  if (PLATFORM === 'linux') {
+    await linuxPerformDrag(fromCoords.globalX, fromCoords.globalY, toCoords.globalX, toCoords.globalY);
+    return `Dragged from (${fromX}, ${fromY}) to (${toX}, ${toY}) on display ${displayIndex}`;
+  }
+
   // macOS implementation
   // cliclick drag command: dd: (drag down/start) then du: (drag up/end)
   const command = `dd:${fromCoords.globalX},${fromCoords.globalY} du:${toCoords.globalX},${toCoords.globalY}`;
@@ -3030,6 +3489,24 @@ async function takeScreenshot(
     await windowsTakeScreenshot(finalPath, displayIndex, globalRegion);
     
     // Verify the file was created
+    try {
+      await fs.access(finalPath);
+      const stats = await fs.stat(finalPath);
+      return JSON.stringify({
+        success: true,
+        path: finalPath,
+        size: stats.size,
+        displayIndex: displayIndex ?? 'all',
+        timestamp: new Date().toISOString(),
+      });
+    } catch {
+      throw new Error(`Screenshot file was not created at ${finalPath}`);
+    }
+  }
+
+  if (PLATFORM === 'linux') {
+    await linuxTakeScreenshot(finalPath, displayIndex, region);
+
     try {
       await fs.access(finalPath);
       const stats = await fs.stat(finalPath);
@@ -3122,7 +3599,7 @@ async function takeScreenshotForDisplay(
   // Take the screenshot first
   await takeScreenshot(tempPath, displayIndex, region);
 
-  let finalPath = tempPath;
+  const finalPath = tempPath;
   // let clickHistoryInfo: string | undefined;
 
   // // Annotate with click history if requested
@@ -3216,6 +3693,10 @@ async function getMousePosition(): Promise<{ x: number; y: number; displayIndex:
     const pos = await windowsGetMousePosition();
     globalX = pos.globalX;
     globalY = pos.globalY;
+  } else if (PLATFORM === 'linux') {
+    const pos = await linuxGetMouseGlobalPosition();
+    globalX = pos.globalX;
+    globalY = pos.globalY;
   } else {
     // macOS implementation
     const result = await executeCliclick('p');
@@ -3270,6 +3751,11 @@ async function moveMouse(
   // Windows implementation
   if (PLATFORM === 'win32') {
     await windowsMoveMouse(globalX, globalY);
+    return `Moved mouse to (${x}, ${y}) on display ${displayIndex}`;
+  }
+
+  if (PLATFORM === 'linux') {
+    await linuxMoveMouseGlobal(globalX, globalY);
     return `Moved mouse to (${x}, ${y}) on display ${displayIndex}`;
   }
   
@@ -3390,12 +3876,8 @@ async function callVisionAPIWithTimeout(
       ? `${openAIBaseUrl}/chat/completions`
       : `${openAIBaseUrl}/v1/chat/completions`;
     
-    // Use Node.js built-in https module for better compatibility
-    const https = require('https');
-    const http = require('http');
-    const url = require('url');
-    
-    const urlObj = new url.URL(openAIUrl);
+    // Use Node.js built-in https/http modules for better compatibility
+    const urlObj = new URL(openAIUrl);
     const isHttps = urlObj.protocol === 'https:';
     const httpModule = isHttps ? https : http;
     
@@ -3435,7 +3917,6 @@ async function callVisionAPIWithTimeout(
     }
     
     return new Promise<string>((resolve, reject) => {
-      let timeoutId: NodeJS.Timeout;
       let isResolved = false;
       
       const options = {
@@ -3482,7 +3963,7 @@ async function callVisionAPIWithTimeout(
       });
       
       // Set timeout
-      timeoutId = setTimeout(() => {
+      const timeoutId = setTimeout(() => {
         if (!isResolved) {
           isResolved = true;
           req.destroy();
@@ -3510,7 +3991,6 @@ async function callVisionAPIWithTimeout(
     });
   } else {
     // Use Anthropic API format
-    const Anthropic = require('@anthropic-ai/sdk');
     const anthropic = new Anthropic({
       apiKey: apiKey,
       baseURL: baseUrl,
@@ -4155,8 +4635,8 @@ async function planGUIActions(
   taskDescription: string,
   displayIndex?: number
 ): Promise<{ steps: Array<{ step: number; action: string; element_description: string; value?: string; reasoning: string }>; summary?: string }> {
-  // Supported on both macOS and Windows
-  if (PLATFORM !== 'darwin' && PLATFORM !== 'win32') {
+  // Supported on macOS, Windows, and Linux
+  if (PLATFORM !== 'darwin' && PLATFORM !== 'win32' && PLATFORM !== 'linux') {
     throw new Error(`GUI action planning is not supported on platform: ${PLATFORM}`);
   }
   
@@ -4269,8 +4749,8 @@ async function locateGUIElement(
   reasoning?: string;
   boundingBox?: { left: number; top: number; right: number; bottom: number };
 }> {
-  // Supported on both macOS and Windows
-  if (PLATFORM !== 'darwin' && PLATFORM !== 'win32') {
+  // Supported on macOS, Windows, and Linux
+  if (PLATFORM !== 'darwin' && PLATFORM !== 'win32' && PLATFORM !== 'linux') {
     throw new Error(`Element location is not supported on platform: ${PLATFORM}`);
   }
 
@@ -4459,8 +4939,8 @@ async function performVisionBasedInteraction(
   taskDescription: string,
   displayIndex?: number
 ): Promise<string> {
-  // Supported on both macOS and Windows
-  if (PLATFORM !== 'darwin' && PLATFORM !== 'win32') {
+  // Supported on macOS, Windows, and Linux
+  if (PLATFORM !== 'darwin' && PLATFORM !== 'win32' && PLATFORM !== 'linux') {
     throw new Error(`Vision-based GUI interaction is not supported on platform: ${PLATFORM}`);
   }
   
@@ -4538,8 +5018,8 @@ async function verifyGUIState(
   question: string,
   displayIndex?: number
 ): Promise<string> {
-  // Supported on both macOS and Windows
-  if (PLATFORM !== 'darwin' && PLATFORM !== 'win32') {
+  // Supported on macOS, Windows, and Linux
+  if (PLATFORM !== 'darwin' && PLATFORM !== 'win32' && PLATFORM !== 'linux') {
     throw new Error(`GUI verification is not supported on platform: ${PLATFORM}`);
   }
   
@@ -4696,7 +5176,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'type_text',
-        description: 'Type text at the current cursor/focus position. Supports Unicode (Chinese/Japanese/emoji) by automatically using clipboard paste (Cmd+V) when needed.',
+        description: 'Type text at the current cursor/focus position. Supports Unicode with platform-specific typing strategies.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -4711,7 +5191,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             input_method: {
               type: 'string',
               enum: ['auto', 'keystroke', 'paste'],
-              description: 'Typing method. "auto" (default) uses clipboard paste for Unicode/CJK and keystroke for ASCII. Use "paste" to force clipboard paste. Use "keystroke" to force AppleScript keystroke.',
+              description: 'Typing method. "auto" (default) chooses a reliable platform strategy. Use "paste" to force clipboard-based input. Use "keystroke" to force key simulation.',
             },
             preserve_clipboard: {
               type: 'boolean',

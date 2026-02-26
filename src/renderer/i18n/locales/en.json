@@ -107,7 +107,7 @@
     "title": "Sandbox Environment",
     "wslDesc": "Run commands in WSL2 Linux environment for better isolation and security on Windows.",
     "limaDesc": "Run commands in Lima VM for better isolation and security on macOS.",
-    "nativeDesc": "Commands run directly on your system (Linux native mode).",
+    "nativeDesc": "Commands run directly on your system when isolated runtime is unavailable.",
     "enableSandbox": "Enable Sandbox Mode",
     "readyStatus": "Sandbox ready and running",
     "notReadyStatus": "Sandbox enabled but not fully configured",
@@ -132,7 +132,7 @@
     "wslInstallHint": "Install WSL2 for better isolation. Run this command in PowerShell as Administrator:",
     "limaNotInstalled": "Lima is not installed",
     "limaInstallHint": "Install Lima for better isolation. Run this command in Terminal:",
-    "linuxNative": "Linux runs commands natively without additional sandboxing.",
+    "linuxNative": "Linux prefers rootless container isolation and falls back to native mode if unavailable.",
     "nodeInstalled": "Node.js installed successfully",
     "nodeInstallFailed": "Failed to install Node.js",
     "pythonInstalled": "Python installed successfully",
@@ -148,7 +148,7 @@
     "setupComplete": "Sandbox setup complete",
     "setupFailed": "Sandbox setup failed",
     "helpText1": "Sandbox provides an isolated environment for running commands safely.",
-    "helpText2": "WSL2 (Windows) or Lima VM (macOS) is required for full sandbox support."
+    "helpText2": "WSL2 (Windows), Lima VM (macOS), or rootless Podman/Docker (Linux) is required for full sandbox support."
   },
   "mcp": {
     "noConnectors": "No connectors configured",
